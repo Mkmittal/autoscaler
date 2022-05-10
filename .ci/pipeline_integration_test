@@ -3,15 +3,15 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 ############################################## </Color> ##############################################
 
-mkdir -p cluster-autoscaler/dev/kubeconfigs
-CA_DEV_PATH = ${SOURCE_PATH}/cluster-autoscaler/dev
+mkdir -p ${SOURCE_PATH}/cluster-autoscaler/dev/kubeconfigs
+declare CA_DEV_PATH = ${SOURCE_PATH}/cluster-autoscaler/dev
 logs_path=${SOURCE_PATH}/cluster-autoscaler/integration/logs
 TEST_RESULT=
 cli_path=/cc/utils/cli.py
 num_of_existing_nodes=1
 
 #these variables are accessed in cluster-autoscaler/integration/ so prefixed by ${CA_DEV_PATH} for absolute path
-declare CONTROL_KUBECONFIG=${CA_DEV_PATH}/kubeconfigs/kubconfig_control.yaml
+declare CONTROL_KUBECONFIG=${CA_DEV_PATH}/kubeconfigs/kubeconfig_control.yaml
 declare TARGET_KUBECONFIG=${CA_DEV_PATH}/kubeconfigs/kubeconfig_target.yaml
 
 export CONTROL_KUBECONFIG
