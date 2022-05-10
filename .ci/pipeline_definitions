@@ -20,11 +20,11 @@ autoscaler:
             dockerfile: 'Dockerfile'
             dir: 'cluster-autoscaler'
     steps:
-      test:
-        image: 'golang:1.15.0'
       build:
-        image: 'golang:1.15.0'
+        image: 'golang:1.17.9'
         output_dir: 'binary'
+      test:
+        image: 'eu.gcr.io/gardener-project/gardener/testmachinery/base-step:stable'
   jobs:
     head-update:
       traits:

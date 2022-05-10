@@ -49,9 +49,23 @@ if [[ "${SOURCE_PATH}" != *"src/k8s.io/autoscaler" ]]; then
 fi
 
 ##############################################################################
+# Question: should include the skip integration tests and all options or this much is fine, all the printing is already done in the pipeline_IT file
+
+# Unit testing
+echo ">>>>> Starting unit tests"
 
 go test $(go list ./cluster-autoscaler/... | grep -v cloudprovider | grep -v vendor | grep -v integration)
 go test $(go list ./cluster-autoscaler/cloudprovider/mcm/... | grep -v vendor)
+
+echo ">>>>> Finished executing unit tests"
+
+
+echo ">>>>> Starting Integration tests"
+
+#TODO: run the Integration tests script here.
+.ci/pipeline_integration_test
+
+echo ">>>>> Finished executing Integration tests"
 
 #TODO: Return success failure properly
 echo "CI tests are done"

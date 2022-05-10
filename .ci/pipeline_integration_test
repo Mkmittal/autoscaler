@@ -1,0 +1,239 @@
+############################################## <Color> ##############################################
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+############################################## </Color> ##############################################
+
+mkdir -p cluster-autoscaler/dev/kubeconfigs
+CA_DEV_PATH = ${SOURCE_PATH}/cluster-autoscaler/dev
+logs_path=${SOURCE_PATH}/cluster-autoscaler/integration/logs
+TEST_RESULT=
+cli_path=/cc/utils/cli.py
+num_of_existing_nodes=1
+
+#these variables are accessed in cluster-autoscaler/integration/ so prefixed by ${CA_DEV_PATH} for absolute path
+declare CONTROL_KUBECONFIG=${CA_DEV_PATH}/kubeconfigs/kubconfig_control.yaml
+declare TARGET_KUBECONFIG=${CA_DEV_PATH}/kubeconfigs/kubeconfig_target.yaml
+
+export CONTROL_KUBECONFIG
+export TARGET_KUBECONFIG
+
+############################################## <Helper fn> ##############################################
+
+function hf_num_of_objects_in_target_cluster() {
+    output=$(kubectl --kubeconfig=${TARGET_KUBECONFIG} get "$1" 2>&1)
+    
+    ready_count=$(echo "$output" | grep "" -c)-1
+
+    if [ ${ready_count} -le 0]; then
+        return 0
+    fi
+
+    return $(ready_count)
+}
+
+function hf_num_of_objects_in_control_cluster() {
+    output=$(kubectl --kubeconfig=${CONTROL_KUBECONFIG} get "$1" 2>&1)
+    
+    ready_count=$(echo "$output" | grep "" -c)-1
+    
+    if [ ${ready_count} -le 0]; then
+        return 0
+    fi
+
+    return $(ready_count)
+}
+
+function hf_wait_on() {
+    function_name=$1
+    function_param=$2
+    count_to_match=$3
+    seconds_to_wait=$4
+    iteration_count=$(($seconds_to_wait/30))
+
+    while
+        "$function_name" "$function_param"
+        ret=$?
+        [[ $ret -ne $count_to_match ]]
+    do
+        sleep 30
+        ((iteration_count--))
+
+        # Exit script when timeout occurs
+        if [ $iteration_count -le 0 ]; then
+            printf "\tFailed: Timeout occurred while waiting for operation. Exiting Test to avoid further conflicts.\n"
+            printf "\tWas Executing function: %s, %s\n" $function_name $function_param
+            printf "${RED}There is another PR running its integration test on the clusters. Waiting Timed Out. Kindly re-run the tests.${NC}\n"
+            exit 1
+        fi
+
+    done
+}
+
+############################################## </Helper fn> ##############################################
+
+
+############################################## <Initialization> ##############################################
+
+function setup_ginkgo() {
+    echo "Installing Ginkgo..."
+    GO111MODULE=off go get -u github.com/onsi/ginkgo/ginkgo
+    ginkgo version
+    echo "Successfully installed Ginkgo."
+}
+
+function fetch_control_kubeconfig() {
+
+    #TODO: set ACCESS_TOKEN
+    curl -sfSLJO \
+    -H "Authorization: token $ACCESS_TOKEN" \
+    -H "Accept: application/vnd.github.v3.raw" \
+    --create-dir --output-dir "${CA_DEV_PATH}/kubeconfigs" \
+    "https://github.wdf.sap.corp/raw/kubernetes-dev/landscape-dev-garden/master/state/roles-seeds/oidc-kubeconfig.yaml"
+    
+    # setting the context to dev-virtual-garden
+    sed -i -e "s/\(current-context: *\).*/\1 dev-virtual-garden/1" ${CA_DEV_PATH}/kubeconfigs/oidc-kubeconfig.yaml
+
+    # getting secret of seed kubeconfig
+    echo "$(kubectl --kubeconfig=${CA_DEV_PATH}/kubeconfigs/oidc-kubeconfig.yaml get secret/$1.kubeconfig --template={{.data.kubeconfig}} | base64 -d)" > ${CONTROL_KUBECONFIG}
+
+}
+
+function fetch_target_kubeconfig() {
+    ${cli_path} config attribute --cfg-type kubernetes --cfg-name ca-ci-$1-test --key kubeconfig > ${TARGET_KUBECONFIG}
+}
+
+function setup_environment() {
+    printf "\n\t\t\t----- Setup Test Environment --------\n"
+
+    #installing yq 
+    printf "\nDownloading and installing yq\n"
+    curl -LO https://github.com/mikefarah/yq/releases/download/v4.13.3/yq_linux_amd64
+    chmod +x ./yq_linux_amd64
+    mv ./yq_linux_amd64 /usr/local/bin/yq
+    printf "Successfully installed yq\n"
+
+    # install kubectl
+    printf "\nDownloading and installing kubectl\n"
+    curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.16.0/bin/linux/amd64/kubectl
+    chmod +x ./kubectl
+    mv ./kubectl /usr/local/bin/kubectl
+    printf "Successfully installed kubectl\n"
+
+    #install ginkgo
+    if ! [ -x "$(command -v ginkgo)" ]; then
+    setup_ginkgo
+    fi
+
+    #fetching kubeconfigs from secret_server
+    fetch_control_kubeconfig $1
+    fetch_target_kubeconfig $1
+    
+    #setting env variables
+    declare CONTROL_NAMESPACE=shoot--mcm-ci--ca-$1-test
+    declare CLUSTER_PROVIDER=$1
+    #for now it is static as we only run this test for aws, as more tests get included for volume tests, add if else statements here
+    declare VOLUME_ZONE="eu-west-1b"
+
+    export CONTROL_NAMESPACE
+    export CLUSTER_PROVIDER
+    export VOLUME_ZONE
+}
+
+function check_cluster_state() {
+    printf "\t\t\t----- Checking Test Environment -------\n"
+
+    printf "\nChecking existence of node objects\n"
+
+    # Wait 60sec for any thing getting cleared from before
+    hf_wait_on "hf_num_of_objects_in_control_cluster" machinedeployment 3 60
+    printf "correct number of machine Deployments found\n"
+
+    hf_wait_on "hf_num_of_objects_in_control_cluster" machines 1 60
+    printf "correct number of machines found\n"
+
+    hf_wait_on "hf_num_of_objects_in_target_cluster" nodes ${num_of_existing_nodes} 60
+    printf "No additional node objects in target test cluster\n"
+
+    hf_wait_on "hf_num_of_objects_in_target_cluster" namespaces 4 60
+    printf "No additional namespaces found in target test cluster\n"
+
+    hf_wait_on "hf_num_of_objects_in_target_cluster" pods 0 60
+    printf "No additional workload in default namespace in target test cluster\n"
+
+    #wait in case some orphan resources are terminating
+    sleep 30
+    
+    printf "\nCluster state looks clean\n"
+    printf "\t\t\t----- Checking Test Environment DONE -------\n"
+}
+
+############################################## </Initialization> ##############################################
+
+############################################## <Modules> ########################################################
+
+function run_integration_tests() {
+    echo "Starting integration tests..."
+    set +e
+    cd ${SOURCE_PATH}/cluster-autoscaler/integration/
+
+    ginkgo -v
+    TEST_RESULT=$?
+    
+    set -e
+
+    if [ ${TEST_RESULT} -ne 0 ]; then
+        printf "\n\t\t\t${RED}Integration tests failed. Kindly check you PR${NC}\n"
+    else
+        printf "Done with integration test\n"
+    fi
+}
+
+function print_controller_logs {
+    printf "\n\t\t\t----- Start of ca Logs -----------\n"
+    cat $logs_path/autoscaler_process.log
+    printf "\n\t\t\t----- End of ca Logs   ----------\n\n"
+
+}
+
+############################################## </Modules> ########################################################
+
+
+############################################## <Main> ########################################################
+
+printf "\n\t\t\t----- Start of Test Script -----------\n"
+
+printf "\n\t\t\t----- Running test for aws Cluster -----------\n"
+setup_environment "aws"
+#if cluster state is not clean then don't run the tests
+check_cluster_state
+result=$?
+if [ ${result} -ne 0 ]; then
+exit $result
+fi
+run_integration_tests 
+print_controller_logs
+
+if [ ${TEST_RESULT} -ne 0 ]; then
+    printf "\n\t\t\t${RED}Integration tests failed for aws Cluster. Kindly check you PR${NC}\n"
+    exit $TEST_RESULT
+fi
+
+printf "\n\t\t\t----- Successfully ended tests for aws Cluster -----------\n"
+
+printf "\n\t\t\t----- Running test for gcp Cluster -----------\n"
+setup_environment "gcp"
+#if cluster state is not clean then don't run the tests
+check_cluster_state
+result=$?
+if [ ${result} -ne 0 ]; then
+exit $result
+fi
+run_integration_tests 
+print_controller_logs
+printf "\n\t\t\t----- Successfully ended tests for gcp Cluster -----------\n"
+
+printf "\n\t\t\t----- End of Test Script -----------\n"
+
+exit $TEST_RESULT
+
+############################################## </Main> ########################################################
