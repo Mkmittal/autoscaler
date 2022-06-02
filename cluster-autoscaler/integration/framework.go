@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"k8s.io/client-go/util/retry"
 	"os"
 	"os/exec"
 	"sort"
@@ -17,7 +18,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/pointer"
 )
@@ -355,7 +355,7 @@ func (driver *Driver) deploySmallWorkload(replicas int32, workloadName string) e
 }
 
 func (driver *Driver) scaleWorkload(workloadName string, replicas int32) (err error) {
-	for i := 0; i < 5; i++ {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		deployment, err := driver.targetCluster.Clientset.AppsV1().Deployments("default").Get(context.Background(), workloadName, metav1.GetOptions{})
 		if err != nil {
 			return err
@@ -364,20 +364,8 @@ func (driver *Driver) scaleWorkload(workloadName string, replicas int32) (err er
 		deployment.Spec.Replicas = pointer.Int32Ptr(replicas)
 
 		_, err = driver.targetCluster.Clientset.AppsV1().Deployments("default").Update(context.Background(), deployment, metav1.UpdateOptions{})
-		if err != nil {
-			if strings.Contains(err.Error(), genericregistry.OptimisticLockErrorMsg) {
-				continue
-			} else {
-				break
-			}
-		} else {
-			break
-		}
-	}
-	if err != nil {
 		return err
-	}
-	return nil
+	})
 }
 
 func (driver *Driver) getOldestAndLatestNode() (*v1.Node, *v1.Node, error) {
